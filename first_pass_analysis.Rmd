@@ -1,0 +1,219 @@
+---
+title: "data_mapping_v1"
+output: html_document
+---
+
+#Packages
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(here)
+library(sf)
+library(leaflet)
+library(mapview); mapviewOptions(fgb = FALSE)
+library(dplyr)
+library(ggplot2)
+library(maps)
+library(readxl)
+library(plotly)
+library(shiny)
+library(stringr)
+#install.packages('leaflet.extras')
+library(leaflet.extras)
+
+#Disable on-the-fly projections
+sf::sf_use_s2(FALSE)
+```
+
+#Exploratory Analysis
+
+Prelim analysis details:
+- Histograms of durations for planned vs unplanned outages
+- Maps for seeing each - color related to duration? Separate maps for unplanned vs planned
+- For each state, plot the total duration of outages going on during each day on a single plot
+
+```{r}
+outages <- read.csv('public_outage_tracker_export_2024-06-13_154851.csv')
+
+outages <- outages %>%
+  mutate(
+    days = as.numeric(str_extract(fix_duration_estimate, "\\d+(?=d)")),
+    hours = as.numeric(str_extract(fix_duration_estimate, "\\d+(?=h)")),
+    minutes = as.numeric(str_extract(fix_duration_estimate, "\\d+(?=m)")),
+    seconds = as.numeric(str_extract(fix_duration_estimate, "\\d+(?=s)")),
+    duration_hours = coalesce(days, 0)*24 + coalesce(hours, 0) + coalesce(minutes, 0)/60 + coalesce(seconds, 0)/3600
+  )
+
+ggplot(outages, aes(x = duration_hours)) +
+  geom_histogram(binwidth = 1, position = "identity", alpha = 0.6) +
+  facet_wrap(~cause, scales = "free_y", labeller = labeller(
+    cause = c(
+      planned = "Planned Outage",
+      unplanned = "Unplanned Outage"
+    )
+  )) +
+  labs(
+    title = "Outage Duration by Type",
+    x = "Duration (hours)",
+    y = "Count",
+    fill = "Outage Type"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+planned_data <- outages %>% 
+  filter(cause == "planned") %>% 
+  arrange(duration_hours)
+
+leaflet(planned_data) %>%
+  addTiles() %>%
+  addCircleMarkers(
+    lng = ~device_lon,
+    lat = ~device_lat,
+    radius = 5,
+    stroke = FALSE,
+    fillOpacity = 0.8,
+    color = ~colorNumeric("YlOrRd", domain = planned_data$duration_hours)(duration_hours),
+    label = ~paste0("Duration: ", round(duration_hours, 2), " hrs")
+  ) %>%
+  addLegend(
+    "bottomright",
+    pal = colorNumeric("YlOrRd", domain = planned_data$duration_hours),
+    values = planned_data$duration_hours,
+    title = "Duration (hrs)"
+  )
+
+planned_data <- outages %>% 
+  filter(cause == "planned") %>% 
+  arrange(affected)
+
+leaflet(planned_data) %>%
+  addTiles() %>%
+  addCircleMarkers(
+    lng = ~device_lon,
+    lat = ~device_lat,
+    radius = 5,
+    stroke = FALSE,
+    fillOpacity = 0.8,
+    color = ~colorNumeric("YlOrRd", domain = planned_data$affected)(affected),
+    label = ~paste0("households affected")
+  ) %>%
+  addLegend(
+    "bottomright",
+    pal = colorNumeric("YlOrRd", domain = planned_data$affected),
+    values = planned_data$affected,
+    title = "Affected Households"
+  )
+```
+
+```{r}
+unplanned_data <- outages %>% 
+  filter(cause == "unplanned") %>% 
+ arrange(duration_hours)
+
+leaflet(unplanned_data) %>%
+  addTiles() %>%
+  addCircleMarkers(
+    lng = ~device_lon,
+    lat = ~device_lat,
+    radius = 5,
+    stroke = FALSE,
+    fillOpacity = 0.8,
+    color = ~colorNumeric("YlGnBu", domain = unplanned_data$duration_hours)(duration_hours),
+    label = ~paste0("Duration: ", round(duration_hours, 2), " hrs")
+  ) %>%
+  addLegend(
+    "bottomright",
+    pal = colorNumeric("YlGnBu", domain = unplanned_data$duration_hours),
+    values = unplanned_data$duration_hours,
+    title = "Duration (hrs)"
+  )
+
+unplanned_data <- outages %>% 
+  filter(cause == "unplanned") %>% 
+ arrange(affected)
+
+leaflet(unplanned_data) %>%
+  addTiles() %>%
+  addCircleMarkers(
+    lng = ~device_lon,
+    lat = ~device_lat,
+    radius = 5,
+    stroke = FALSE,
+    fillOpacity = 0.8,
+    color = ~colorNumeric("YlGnBu", domain = unplanned_data$affected)(affected),
+    label = ~paste0(round(affected, 2), "Affected Households")
+  ) %>%
+  addLegend(
+    "bottomright",
+    pal = colorNumeric("YlGnBu", domain = unplanned_data$affected),
+    values = unplanned_data$affected,
+    title = "Affected Households"
+  )
+```
+
+
+```{r}
+# Ensure datetime columns are POSIXct
+outages <- outages %>%
+  mutate(
+    OutageStartDT = as.POSIXct(outage_start_estimate),
+    OutageEndDT = as.POSIXct(outage_end_estimate)
+  )
+
+# Create a daily sequence for each outage
+outage_days <- outages %>%
+  rowwise() %>%
+  mutate(days_seq = list(seq.Date(as.Date(OutageStartDT), as.Date(OutageEndDT), by = "day"))) %>%
+  unnest(days_seq) %>%
+  ungroup()
+
+#Estimate how many hours each outage contributes per day
+outage_days <- outage_days %>%
+  mutate(
+    start_day = as.POSIXct(days_seq),
+    end_day = as.POSIXct(days_seq + 1),
+    actual_start = pmax(OutageStartDT, start_day),
+    actual_end = pmin(OutageEndDT, end_day),
+    hours_on_day = as.numeric(difftime(actual_end, actual_start, units = "hours"))
+  ) %>%
+  filter(hours_on_day > 0)
+
+#Aggregate by date and jurisdiction
+daily_state_summary <- outage_days %>%
+  group_by(state, days_seq) %>%
+  summarise(total_outage_hours = sum(hours_on_day, na.rm = TRUE), .groups = "drop")
+
+daily_jurisdiction_summary <- outage_days %>%
+  group_by(jurisdiction, days_seq) %>%
+  summarise(total_outage_hours = sum(hours_on_day, na.rm = TRUE), .groups = "drop")
+
+ggplot(daily_state_summary, aes(x = days_seq, y = total_outage_hours, color = state)) +
+  geom_line() +
+  labs(
+    title = "Total Outage Duration Per Day by State",
+    x = "Date",
+    y = "Total Outage Hours",
+    color = "State"
+  ) +  
+  scale_x_date(
+    date_breaks = "3 days"
+  ) +
+  theme_minimal()
+
+ggplot(daily_jurisdiction_summary, aes(x = days_seq, y = total_outage_hours, color = jurisdiction)) +
+  geom_line() +
+  labs(
+    title = "Total Outage Duration Per Day by Jurisdiction",
+    x = "Date",
+    y = "Total Outage Hours",
+    color = "Duke Energy Jurisdiction"
+  ) +
+  scale_x_date(
+    date_breaks = "3 days"
+  ) +
+  theme_minimal()
+```
+
