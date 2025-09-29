@@ -1,0 +1,67 @@
+---
+title: "01_saidi_saifi_caidi_duke"
+output: html_document
+---
+
+```{r package install}
+library(tidyverse)
+library(lubridate)
+library(here)
+library(sf)
+library(dplyr)
+library(ggplot2)
+library(readxl)
+library(plotly)
+library(shiny)
+library(data.table)
+library(tidycensus)
+```
+
+```{r data pull}
+#outage_data_raw <- fread(here("data_raw/outage_tracker.csv"))
+#saveRDS(outage_data_raw, here("data_processed/outage_tracker.rds"))
+outage_data_raw <- readRDS(here("data_processed/outage_tracker.rds"))  #saving it in a binary format so it's easier to work with
+
+#Filling in county and state data for entries missing this but have convex hull data
+outage_data_sf <- outage_data_raw %>% 
+  filter(is.na(county) | is.na(state)) %>% #rows missing county/state
+```
+
+SAIDI (System Average Interruption Duration Index)
+= ∑(customers affected × outage duration) / total customers served
+
+SAIFI (System Average Interruption Frequency Index)
+= ∑(customers affected) / total customers served
+
+CAIDI (Customer Average Interruption Duration Index)
+= SAIFI / SAIDI
+
+Ideal to use convex hulls, but unfortunately unsure of customers served in a convex hull, so going to stick with county data.
+
+```{r tidycensus population data}
+# population data by county for all the states
+
+#Apply the API key
+census_api_key("b5acdf7f791fa15dda8522426afc7a2e6e922c02", install = TRUE, overwrite = TRUE)
+readRenviron("~/.Renviron")
+```
+
+```{r}
+# From ACS (5-year estimates, includes households, income, etc.)
+county_pop <- get_acs(
+  geography = "county",
+  variables = "B01003_001E",  # Total population
+  year = 2022,
+  state = c('FL', 'GA', 'IL', 'IN', 'KY', 'NC', 'OH', 'SC', 'VA')
+)
+
+county_pop_clean <- county_pop %>% 
+  separate(NAME, into = c("county", "state"), sep = ", ") %>%
+  rename(population = estimate) %>% 
+  select("GEOID", "county", "state", "population")
+
+outage_pop_combined <- left_join(outage_data_raw, county_pop_clean, by = c('county', 'state'))
+```
+
+Some of the rows are missing state and county data, so information is gleaned from convex hull data:
+
