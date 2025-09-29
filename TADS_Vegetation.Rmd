@@ -1,0 +1,369 @@
+---
+title: "TADS_vegetation"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(here)
+library(sf)
+library(leaflet)
+library(mapview); mapviewOptions(fgb = FALSE)
+library(dplyr)
+library(ggplot2)
+library(maps)
+library(readxl)
+library(plotly)
+library(shiny)
+library(stringr)
+#install.packages('leaflet.extras')
+library(leaflet.extras)
+library(data.table)
+
+#Disable on-the-fly projections
+sf::sf_use_s2(FALSE)
+
+#New package to install
+#install.packages("climate")
+library(climate)
+#install.packages("noaa")
+library(noaa)
+```
+```{r}
+#need this extra for handling time zones
+tz_mapping <- c(
+  "EST" = "America/New_York",      # Eastern Standard Time
+  "EPT" = "America/New_York",      # Eastern Prevailing Time
+  "CST" = "America/Chicago",       # Central Standard Time
+  "CPT" = "America/Chicago",       # Central Prevailing Time
+  "MPT" = "America/Denver",        # Mountain Prevailing Time
+  "MST" = "America/Denver",        # Mountain Standard Time
+  "PPT" = "America/Los_Angeles",   # Pacific Prevailing Time
+  "PST" = "America/Los_Angeles",   # Pacific Standard Time
+  "APT" = "America/Halifax",       # Atlantic Prevailing Time
+  "AST" = "America/Halifax",       # Atlantic Standard Time
+  "GMT" = "UTC"                    # GMT (Greenwich Mean Time)
+)
+
+#PUT REGION HERE: TRE, MRO, NPCC, RFC, SERC, WECC
+NERC_region <- 'SERC'
+```
+
+
+I would like to see how many transmission outage events are caused by vegetation divided by total amount for each day in the dataset.
+
+```{r}
+#Pulling AC Line inventory
+setwd("/Users/JChuang/Library/CloudStorage/GoogleDrive-jchuang@lbl.gov/Shared drives/project_support/outages/data/April_download")
+TADS_2013_2021_raw <- read_excel("TADS_AC Circuits_2013_2021_20230711.xlsx", sheet = "AC_Inv_Detail")
+TADS_2022_2023_raw <- read_excel("TADS_AC Circuits_2022_20230519.xlsx", sheet = "AC_Inv_Detail")
+TADS_2023_2024_raw <- read_excel("TADS_AC Circuits_2023_20240514.xlsx", sheet = "AC_Inv_Detail")
+setwd("/Users/JChuang/Library/CloudStorage/GoogleDrive-jchuang@lbl.gov/Shared drives/project_support/outages/data/May_download")
+TADS_2024_2025_raw <- read_excel("TADS_AC Circuits_2024_20250506.xlsx", sheet = "AC_Inv_Detail")
+TADS_AC <- rbind(TADS_2013_2021_raw, TADS_2022_2023_raw, TADS_2023_2024_raw, TADS_2024_2025_raw)
+
+# Ensure date columns are in Date format
+TADS_AC$InServiceDate <- as.Date(TADS_AC$InServiceDate)
+TADS_AC$RetirementDate <- as.numeric(TADS_AC$RetirementDate)
+TADS_AC$RetirementDate[is.na(TADS_AC$RetirementDate)] <- NA
+TADS_AC$RetirementDate <- as.Date("1899-12-30") + TADS_AC$RetirementDate 
+
+inventory_filtered <- TADS_AC# %>% 
+ # filter(RegionCode == NERC_region)
+
+#Unique voltage classes
+voltage_classes <- unique(inventory_filtered$VoltageClassCodeName)
+
+#Calculating AC inventory counts for a single year
+get_AC_counter_df_for_year <- function(year){
+  #Filter for the specific year in interest
+  inv_year <- inventory_filtered %>% 
+    filter(ReportingYearNbr == year)
+  
+  #Creating data grid for the year
+  date_df <- tibble(date = seq(as.Date(paste0(year, "-01-01")), as.Date(paste0(year,"-12-31")), by = "day"))
+  
+  #create date-voltage grid
+  date_voltage_grid <- expand_grid(date=date_df$date, VoltageClassCodeName = voltage_classes)
+  
+  #cross join and filter for in-service
+  date_voltage_cross <- date_voltage_grid %>% 
+    rename(JoinDate = date, JoinVoltage = VoltageClassCodeName) %>% 
+    mutate(key = 1) %>% 
+    inner_join(inv_year %>% mutate(key = 1), by = "key") %>% 
+    filter(
+      InServiceDate <= JoinDate,
+      is.na(RetirementDate) | RetirementDate > JoinDate,
+      VoltageClassCodeName == JoinVoltage
+    )
+  
+  # Daily count
+    AC_daily_counts <- date_voltage_cross %>%
+      group_by(JoinDate, JoinVoltage) %>%
+      summarise(total_AC_Inv = n(), .groups = "drop") %>%
+      rename(date = JoinDate, VoltageClassCodeName = JoinVoltage)
+  
+    # Expand to hourly
+    AC_counter_df <- AC_daily_counts %>%
+      crossing(hour = 0:23) %>%
+      mutate(datetime_utc = as.POSIXct(paste(date, sprintf("%02d:00:00", hour)), tz = "UTC")) %>%
+      select(datetime_utc, VoltageClassCodeName, total_AC_Inv) %>%
+      mutate(ReportingYearNbr = year)  # keep track of year
+  
+    return(AC_counter_df)
+}
+
+years <- unique(inventory_filtered$ReportingYearNbr)
+AC_inventory_counter <- map_dfr(years, get_AC_counter_df_for_year)
+
+ggplot(AC_inventory_counter, aes(x=datetime_utc, y = total_AC_Inv, color = VoltageClassCodeName)) +
+  geom_line() +
+  labs(
+    title = "Hourly count of inventory",
+    x = "Month", 
+    y = "Inventory Count",
+    color = "Voltage Class"  
+  ) +
+  theme_minimal() 
+
+AC_inventory_counter_2020_up <- AC_inventory_counter %>% 
+  filter(AC_inventory_counter$datetime_utc >= "2019-12-30 12:00:00 UTC", VoltageClassCodeName == "100-199 kV")
+
+ggplot(AC_inventory_counter_2020_up, aes(x=datetime_utc, y = total_AC_Inv, color = VoltageClassCodeName)) +
+  geom_line() +
+  labs(
+    title = "Hourly count of inventory",
+    x = "Month", 
+    y = "Inventory Count",
+    color = "Voltage Class"  
+  ) +
+  theme_minimal() 
+
+```
+
+#Counting outages by duration and calculating outage rate
+```{r}
+TADS_AC_outages <- read_csv("/Users/JChuang/Documents/energymarkettool/outage_analysis/Processed/TADS_AC_Duration_Cleaned.csv")
+
+#Filter outages list, add an outage end column, and convert times to UTC based on TimeZoneCode
+outages_list <- TADS_AC_outages %>% 
+  #filter(RegionCode == NERC_region) %>% 
+  mutate(OutageEndDT = OutageStartDT + dhours(Outage_hrs)) %>% 
+  mutate(
+    TimeZoneOlson = tz_mapping[TimeZoneCode],  # create new column with Olson tz
+
+    # Convert to local time using force_tz (treats input as naive time in local tz)
+    OutageStart_local = force_tz(OutageStartDT, tzone = TimeZoneOlson),
+    OutageEnd_local   = force_tz(OutageEndDT,   tzone = TimeZoneOlson),
+
+    # Convert to UTC
+    OutageStart_UTC = with_tz(OutageStart_local, tzone = "UTC"),
+    OutageEnd_UTC   = with_tz(OutageEnd_local,   tzone = "UTC") )%>% 
+  select(-OutageStart_local,-OutageEnd_local)
+
+#Keeping only outages with duration >0 min
+AC_outages_filtered <- outages_list %>% 
+  filter(Outage_hrs > 0)
+
+AC_outages_filter_copy <- AC_outages_filtered[!is.na(start) & !is.na(end)]
+  
+#Note: results from above code also used for next section
+
+result_list <- list()
+
+#convert to data.tables
+setDT(AC_inventory_counter)
+setDT(AC_outages_filtered)
+
+#Creating interval columns for the join
+AC_inventory_counter[, `:=`(hour_start = datetime_utc, hour_end = datetime_utc + lubridate::hours(1)- seconds(1))]
+
+setnames(AC_outages_filtered, c("OutageStart_UTC", "OutageEnd_UTC"),
+         c("start", "end"))  # rename for foverlaps
+
+# Set keys for foverlaps
+setkey(AC_outages_filtered, start, end)
+setkey(AC_inventory_counter, hour_start, hour_end)
+
+AC_outages_filtered <- AC_outages_filtered[!is.na(start) & !is.na(end)]
+
+for (v in voltage_classes) {
+  x_sub <- AC_inventory_counter[VoltageClassCodeName == v]
+  y_sub <- AC_outages_filtered[VoltageClassCodeName == v]
+
+  setkey(x_sub, hour_start, hour_end)
+  setkey(y_sub, start, end)
+
+  result_list[[v]] <- foverlaps(x_sub, y_sub, type = "any", nomatch = 0L) #drops rows in x_sub that have no matching overlap in y_sub. "any"
+}
+
+AC_outage_joined <- rbindlist(result_list)
+
+#count outages per hour
+AC_outage_counted <- AC_outage_joined %>% 
+  group_by(datetime_utc, VoltageClassCodeName) %>% 
+  summarise(num_outages_by_duration = n(),
+            .groups = "drop")
+
+#joining back with full counter_df
+AC_outage_duration_counter <- AC_inventory_counter %>%
+  left_join(AC_outage_counted, by = c("datetime_utc", "VoltageClassCodeName")) %>%
+  mutate(num_outages_by_duration = replace_na(num_outages_by_duration, 0))
+
+#cleaning up
+AC_outage_duration_counter  <- AC_outage_duration_counter %>% 
+  select(-c(hour_start, hour_end)) %>% 
+  mutate(outage_rate = num_outages_by_duration/total_AC_Inv) 
+
+ggplot(AC_outage_duration_counter, aes(x=datetime_utc, y = num_outages_by_duration, color = VoltageClassCodeName)) +
+  geom_line() +
+  labs(
+    title = "Hourly count of outages",
+    x = "Month", 
+    y = "Outage Count",
+    color = "Voltage Class"  
+  ) +
+  theme_minimal() 
+```
+
+#Counting outages by start
+
+8/4 continue from here:
+Make this work with what we have here! Then further below, join with other dataframe that has outage rate and inventory!
+```{r}
+# Get all unique voltage classes
+voltage_classes <- AC_outages_filtered %>%
+  distinct(VoltageClassCodeName) %>%
+  pull()
+
+# Create full hourly time grid
+all_hours <- seq(
+  from = floor_date(min(AC_outages_filter_copy$OutageStart_UTC, na.rm = TRUE), "hour"),
+  to   = floor_date(max(AC_outages_filter_copy$OutageEnd_UTC, na.rm = TRUE), "hour"),
+  by = "hour"
+)
+
+# Expand full grid
+full_hourly_grid <- AC_inventory_counter %>%
+  select(datetime_utc, VoltageClassCodeName) %>%
+  distinct()
+
+hourly_counts <- AC_outages_filter_copy %>%
+  mutate(datetime_utc = floor_date(OutageStart_UTC, unit = "hour")) %>%
+  count(VoltageClassCodeName, datetime_utc, name = "num_outages_by_start")
+
+outage_start_counter <- full_hourly_grid %>%
+  left_join(hourly_counts, by = c("VoltageClassCodeName", "datetime_utc")) %>%
+  mutate(num_outages_by_start = replace_na(num_outages_by_start, 0))
+
+ggplot(outage_start_counter, aes(x=datetime_utc, y = num_outages_by_start, color = VoltageClassCodeName)) +
+  geom_line() +
+  labs(
+    title = "Hourly count of outage starts",
+    x = "Month", 
+    y = "Outage Start Count",
+    color = "Voltage Class"  
+  ) +
+  theme_minimal() 
+```
+
+#Rate of outages caused by vegetation:
+
+```{r}
+# Create hourly counts by initiation cause
+hourly_counts <- AC_outages_filter_copy %>%
+  mutate(
+    datetime_utc = floor_date(OutageStart_UTC, unit = "hour"),
+    is_vegetation = grepl("vegetation", InitiationCauseCodeName, ignore.case = TRUE)
+  ) %>%
+  group_by(VoltageClassCodeName, datetime_utc) %>%
+  summarise(
+    total_outages = n(),
+    vegetation_outages = sum(is_vegetation, na.rm = TRUE),
+    vegetation_rate = vegetation_outages / total_outages,
+    .groups = "drop"
+  )
+
+#plotting hourly counts of vegetation
+ggplot(hourly_counts, aes(x = datetime_utc, y = vegetation_outages, color = VoltageClassCodeName)) +
+  geom_line() +
+  labs(
+    title = "Hourly Vegetation Count",
+    x = "Month",
+    y = "Vegetation outage count",
+    color = "Voltage Class"
+  ) +
+  facet_wrap(~ VoltageClassCodeName, scales = "free_y") +
+  theme_minimal()
+
+# Join with full hourly grid so missing hours show as 0
+outage_start_counter <- full_hourly_grid %>%
+  left_join(hourly_counts, by = c("VoltageClassCodeName", "datetime_utc")) %>%
+  mutate(
+    total_outages = replace_na(total_outages, 0),
+    vegetation_outages = replace_na(vegetation_outages, 0),
+    vegetation_rate = if_else(total_outages > 0,
+                              vegetation_outages / total_outages,
+                              NA_real_)   # NA where no outages occurred
+  )
+
+# Plot vegetation rate per hour
+ggplot(outage_start_counter, aes(x = datetime_utc, y = vegetation_rate, color = VoltageClassCodeName)) +
+  geom_line() +
+  labs(
+    title = "Hourly Vegetation Outage Rate",
+    x = "Month",
+    y = "Vegetation Outages / Total Outages",
+    color = "Voltage Class"
+  ) +
+  facet_wrap(~ VoltageClassCodeName, scales = "free_y") +
+  theme_minimal()
+```
+```{r}
+# Calculate duration (in hours) for vegetation-caused outages
+vegetation_durations <- AC_outages_filter_copy %>%
+  filter(grepl("vegetation", InitiationCauseCodeName, ignore.case = TRUE)) %>%
+  mutate(
+    duration_hours = as.numeric(difftime(OutageEnd_UTC, OutageStart_UTC, units = "hours"))
+  )
+
+# Quick check of summary stats
+vegetation_durations %>%
+  summarise(
+    avg_duration = mean(duration_hours, na.rm = TRUE),
+    median_duration = median(duration_hours, na.rm = TRUE),
+    max_duration = max(duration_hours, na.rm = TRUE)
+  )
+
+ggplot(vegetation_durations, aes(x = duration_hours)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", color = "white") +
+  coord_cartesian(xlim = c(0, 72)) +   # zoom in to outages up to 3 days
+  labs(
+    title = "Histogram of Vegetation-Caused Outage Durations (0–72 hrs)",
+    x = "Duration (hours)",
+    y = "Number of Outages"
+  ) +
+  theme_minimal()
+
+ggplot(vegetation_durations, aes(x = duration_hours)) +
+  geom_histogram(binwidth = 0.2, fill = "steelblue", color = "white") +
+  scale_x_log10() +
+  labs(
+    title = "Histogram of Vegetation-Caused Outage Durations (Log Scale)",
+    x = "Duration (log hours)",
+    y = "Number of Outages"
+  ) +
+  theme_minimal()
+
+```
+
+```{r}
+# Row with maximum vegetation outage duration
+max_row <- vegetation_durations %>%
+  filter(!is.na(duration_hours)) %>%
+  slice_max(duration_hours, n = 1)
+
+max_row
+```
+
