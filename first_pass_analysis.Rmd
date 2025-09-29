@@ -34,7 +34,7 @@ Prelim analysis details:
 - For each state, plot the total duration of outages going on during each day on a single plot
 
 ```{r}
-outages <- read.csv('public_outage_tracker_export_2024-06-13_154851.csv')
+outages <- read.csv('outage_tracker.csv')
 
 outages <- outages %>%
   mutate(
@@ -212,8 +212,46 @@ ggplot(daily_jurisdiction_summary, aes(x = days_seq, y = total_outage_hours, col
     color = "Duke Energy Jurisdiction"
   ) +
   scale_x_date(
-    date_breaks = "3 days"
+    date_breaks = "1 days"
   ) +
   theme_minimal()
+```
+
+```{r}
+# Roll each outage-day to its month (year-month)
+outage_days <- outage_days %>%
+  mutate(month = floor_date(as.Date(days_seq), unit = "month"))
+
+# --- Monthly totals by state ---
+monthly_state_summary <- outage_days %>%
+  group_by(state, month) %>%
+  summarise(total_outage_hours = sum(hours_on_day, na.rm = TRUE), .groups = "drop")
+
+ggplot(monthly_state_summary, aes(x = month, y = total_outage_hours, fill = state)) +
+  geom_col(position = "stack") +
+  labs(
+    title = "Total Outage Hours per Month by State",
+    x = "Month",
+    y = "Total Outage Hours",
+    fill = "State"
+  ) +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b %Y") +
+  theme_minimal() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# --- Monthly totals by jurisdiction ---
+monthly_jurisdiction_summary <- outage_days %>%
+  group_by(jurisdiction, month) %>%
+  summarise(total_outage_hours = sum(hours_on_day, na.rm = TRUE), .groups = "drop")
+
+ggplot(monthly_jurisdiction_summary, aes(x = month, y = total_outage_hours, fill = jurisdiction)) +
+  geom_col(position = "stack") +
+  labs(
+    title = "Total Outage Hours per Month by Jurisdiction",
+    x = "Month",
+    y = "Total Outage Hours",
+    fill = "Duke Energy Jurisdiction"
+  ) +
+  scale_x_date(date_breaks = "1 month", date_labels = "%b %Y") +
+  theme_minimal() + theme(axis.text.x = element_text(angle = 45, hjust = 1))
 ```
 
