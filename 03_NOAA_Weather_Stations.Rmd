@@ -1,0 +1,161 @@
+---
+title: "03_NOAA_Weather_Stations.Rmd"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    number_sections: false
+params:
+  rds_path: "data_processed/uscrn_combined_reformatted.rds"
+  states: NULL     # NULL = all states found in file; or e.g. c("FL","GA")
+  date_range: NULL # NULL or c("2023-01-01","2024-12-31") in "YYYY-MM-DD"
+  save_per_state_csv: true
+  top_n_states_for_plots: 10
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(data.table)
+library(lubridate)
+library(ggplot2)
+library(scales)
+```
+
+```{r}
+rds_path <- params$rds_path
+if (!file.exists(rds_path)) stop("RDS file not found: ", rds_path)
+dt <- readRDS(rds_path)
+setDT(dt)
+
+# ensure datetime exists (try build from UTC_DATE/UTC_TIME if missing)
+if (!("datetime_utc" %in% names(dt)) && all(c("UTC_DATE","UTC_TIME") %in% names(dt))) {
+  dt[, UTC_TIME := sprintf("%04s", as.character(UTC_TIME))]
+  dt[, datetime_utc := as.POSIXct(paste0(UTC_DATE, " ", UTC_TIME), format = "%Y%m%d %H%M", tz = "UTC")]
+}
+
+# make sure source_file exists
+if (!("source_file" %in% names(dt))) dt[, source_file := NA_character_]
+
+# sanitize state column
+if (!("state" %in% names(dt))) dt[, state := NA_character_]
+dt[, state := toupper(state)]
+
+# filter by params$states if provided
+if (!is.null(params$states)) {
+  wanted <- toupper(params$states)
+  dt <- dt[state %in% wanted]
+}
+
+# filter by date_range if provided
+if (!is.null(params$date_range)) {
+  dr <- as.Date(params$date_range)
+  if (length(dr) != 2) stop("params$date_range must be length-2 (start,end)")
+  dt <- dt[as.Date(datetime_utc) >= dr[1] & as.Date(datetime_utc) <= dr[2]]
+}
+
+message("Rows after filtering: ", nrow(dt))
+states_present <- sort(unique(na.omit(dt$state)))
+message("States present: ", paste(states_present, collapse = ", "))
+
+```
+
+```{r}
+# variables to summarize (edit if your file uses different names)
+vars_to_summarize <- c("AIR_TEMPERATURE", "PRECIPITATION", "SOLAR_RADIATION",
+                       "SURFACE_TEMPERATURE", "RELATIVE_HUMIDITY",
+                       "SOIL_MOISTURE_5", "SOIL_TEMPERATURE_5", "WETNESS",
+                       "WIND_1_5")
+vars_present <- intersect(vars_to_summarize, names(dt))
+if (length(vars_present) == 0) stop("None of the target variables present. Available cols: ", paste(names(dt), collapse = ", "))
+message("Summarizing: ", paste(vars_present, collapse = ", "))
+
+summarize_numeric <- function(x) {
+  n <- length(x)
+  n_missing <- sum(is.na(x))
+  valid <- x[!is.na(x)]
+  if (length(valid) == 0L) return(list(n = n, missing_pct = 100, mean = NA_real_, median = NA_real_, sd = NA_real_, min = NA_real_, p10 = NA_real_, p90 = NA_real_, max = NA_real_))
+  list(
+    n = n,
+    missing_pct = 100 * n_missing / n,
+    mean = mean(valid),
+    median = median(valid),
+    sd = sd(valid),
+    min = min(valid),
+    p10 = as.numeric(quantile(valid, 0.1, na.rm = TRUE, names = FALSE)),
+    p90 = as.numeric(quantile(valid, 0.9, na.rm = TRUE, names = FALSE)),
+    max = max(valid)
+  )
+}
+
+```
+
+```{r}
+# summary function for a numeric vector
+summarize_numeric <- function(x) {
+  n <- length(x)
+  n_missing <- sum(is.na(x))
+  valid <- x[!is.na(x)]
+  if (length(valid) == 0L) return(list(n = n, missing_pct = 100, mean = NA_real_, median = NA_real_, sd = NA_real_, min = NA_real_, p10 = NA_real_, p90 = NA_real_, max = NA_real_))
+  list(
+    n = n,
+    missing_pct = 100 * n_missing / n,
+    mean = mean(valid),
+    median = median(valid),
+    sd = sd(valid),
+    min = min(valid),
+    p10 = as.numeric(quantile(valid, 0.1, na.rm = TRUE, names = FALSE)),
+    p90 = as.numeric(quantile(valid, 0.9, na.rm = TRUE, names = FALSE)),
+    max = max(valid)
+  )
+}
+```
+
+```{r}
+# We'll compute a tidy table with one row per (state, source_file, variable)
+groups <- unique(dt[, .(state, source_file)])
+res <- list()
+k <- 1
+for (i in seq_len(nrow(groups))) {
+  st  <- groups$state[i]
+  src <- groups$source_file[i]
+  sub <- dt[state == st & source_file == src]
+  # skip empty groups
+  if (nrow(sub) == 0) next
+  for (v in vars_present) {
+    vec <- suppressWarnings(as.numeric(sub[[v]]))
+    s <- summarize_numeric(vec)
+    res[[k]] <- data.table(
+      state = st,
+      source_file = src,
+      variable = v,
+      n = s$n,
+      missing_pct = s$missing_pct,
+      mean = s$mean,
+      median = s$median,
+      sd = s$sd,
+      min = s$min,
+      p10 = s$p10,
+      p90 = s$p90,
+      max = s$max
+    )
+    k <- k + 1
+  }
+}
+summary_dt <- rbindlist(res)
+setorder(summary_dt, state, source_file, variable)
+summary_dt
+
+```
+
+```{r}
+outdir <- file.path(dirname(rds_path), "state_summaries_by_source")
+dir.create(outdir, showWarnings = FALSE, recursive = TRUE)
+states_to_write <- sort(unique(summary_dt$state))
+for (st in states_to_write) {
+  outp <- file.path(outdir, paste0("summary_", st, "_by_source.csv"))
+  fwrite(summary_dt[state == st], outp)
+}
+message("Saved per-state-by-source CSVs to: ", outdir)
+
+```
+
