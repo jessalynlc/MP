@@ -30,6 +30,7 @@ library(shiny)
 outage_data_raw <- readRDS(here("data_processed/outage_tracker.rds"))  #saving it in a binary format so it's easier to work with
 ```
 
+
 Trying to extract county from device_lat and device_lon:
 ```{r adding spatial data}
 
@@ -175,6 +176,8 @@ reliability_metrics_table_final <- left_join(reliability_metrics_table, eia_stat
 
 reliability_metrics_table_final <- reliability_metrics_table_final %>% 
   rename(SAIDI_county = SAIDI, SAIFI_county = SAIFI, CAIDI_county = CAIDI)
+
+st_write(reliability_metrics_table_final, "./data_processed/reliability_metrics_table_final.gpkg")
 
 ```
 

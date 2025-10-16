@@ -1,0 +1,152 @@
+---
+title: "01_duke_weather_analysis"
+output: html_document
+---
+
+pull reliability_metrics_table_final
+Assign each county to nearest weather station (using geometry and lat and lon from weather station data)
+Save as a csv? or R project?
+
+```{r}
+# match_counties_to_uscrn.R
+# Purpose: match each county (reliability sf) to the nearest USCRN station (WBANNO) extracted
+#          from a big sub-hourly uscrn_combined_reformatted.rds table.
+#
+# Requirements: sf, dplyr, readr
+# Run: Adjust file paths as needed and run in your R session.
+
+library(sf)
+library(dplyr)
+library(readr)
+
+# --------------------- Inputs - adjust paths ---------------------
+# Your reliability sf (if already in memory, assign it to sf_reliability and skip st_read)
+# sf_reliability <- reliability_metrics_table_final
+# OR read from gpkg:
+gpkg_path <- "./data_processed/reliability_metrics_table_final.gpkg"
+sf_reliability <- st_read(dsn = gpkg_path, quiet = TRUE)
+
+# Weather RDS containing sub-hour observations and station IDs
+uscrn_rds <- "./data_processed/uscrn_combined_reformatted.rds"
+
+# Output paths
+out_gpkg <- "./data_processed/reliability_with_matched_uscrn.gpkg"
+out_lookup_csv <- "./data_processed/county_to_uscrn_lookup.csv"
+
+# --------------------- Load weather data (big RDS) ---------------------
+message("Reading RDS...")
+uscrn <- readRDS(uscrn_rds)   # expects a data.frame / tibble
+
+# Quick check that WBANNO exists
+if (!"WBANNO" %in% names(uscrn)) stop("WBANNO column not found in uscrn RDS. Check column names.")
+
+# --------------------- Extract unique station locations ---------------------
+lon_names <- "LONGITUDE"
+lat_names <- "LATITUDE"
+
+lon_col <- intersect(names(uscrn), lon_names) %>% first()
+lat_col <- intersect(names(uscrn), lat_names) %>% first()
+
+if (is.null(lon_col) || is.null(lat_col)) {
+  stop("Could not auto-detect lon/lat columns in uscrn. Edit lon_names/lat_names or rename columns.")
+}
+
+message(paste0("Using lon/lat columns: ", lon_col, " , ", lat_col))
+
+# Keep only unique stations by WBANNO (and coordinates). If a station has slightly varying coords,
+# we take the median coordinate by WBANNO to be robust.
+stations_unique <- uscrn %>%
+  group_by(WBANNO) %>%
+  summarize(
+    station_lon = median(.data[[lon_col]], na.rm = TRUE),
+    station_lat = median(.data[[lat_col]], na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(station_lon) & !is.na(station_lat))
+
+# Convert to sf (WGS84 assumed). If your lon/lat are already in a different CRS, change crs accordingly.
+sf_stations <- st_as_sf(stations_unique, coords = c("station_lon", "station_lat"), crs = 4326, remove = FALSE)
+
+# --------------------- Prepare reliability centroids ---------------------
+# We'll use centroids of the reliability geometries for nearest-station matching.
+# Transform both datasets to a projected CRS in meters for distance calculations.
+proj_crs <- 3857   # Web Mercator; swap to local projection for better accuracy if needed
+
+sf_reliability_centroid <- sf_reliability %>%
+  st_transform(crs = proj_crs) %>%
+  mutate(.centroid = st_centroid(st_geometry(.))) %>%
+  st_set_geometry(".centroid")   # sets the centroid as the active geometry
+
+sf_stations_proj <- st_transform(sf_stations, crs = proj_crs)
+
+# --------------------- Find nearest station per county ---------------------
+# st_nearest_feature -> index in sf_stations_proj for each county
+nearest_idx <- st_nearest_feature(sf_reliability_centroid, sf_stations_proj)
+
+# Pull matched station rows and compute distances
+stations_matched <- sf_stations_proj[nearest_idx, , drop = FALSE]
+
+# Compute distances (meters)
+dists <- st_distance(st_geometry(sf_reliability_centroid), st_geometry(stations_matched), by_element = TRUE)
+dist_m <- as.numeric(units::set_units(dists, "m"))
+
+# --------------------- Build final joined object ---------------------
+# Station attributes to attach (drop geometry), prefix to avoid collisions
+stations_attrs <- stations_matched %>%
+  st_drop_geometry() %>%
+  rename_with(~ paste0("station_", .), everything())
+
+# Bind columns to the original reliability (keep original geometry & attributes)
+sf_reliability_with_uscrn <- sf_reliability %>%
+  mutate(nearest_station_idx = nearest_idx,
+         nearest_station_distance_m = dist_m) %>%
+  bind_cols(stations_attrs)
+
+# --------------------- Optional: thresholding by distance ---------------------
+# Mark if the matched station is within a reasonable distance (e.g., 50 km). Adjust as needed.
+max_allow_m <- 50000  # 50 km
+sf_reliability_with_uscrn <- sf_reliability_with_uscrn %>%
+  mutate(station_within_50km = nearest_station_distance_m <= max_allow_m)
+
+# --------------------- Output: save lookup and gpkg ---------------------
+# Save GeoPackage with matched info (geometry preserved)
+st_write(sf_reliability_with_uscrn, dsn = out_gpkg, layer = "reliability_with_uscrn", delete_dsn = TRUE, quiet = TRUE)
+
+# Create a minimal lookup table: county identifiers -> WBANNO (station ID) and distance
+# Adjust the selecting columns below to include the county/state identifiers you want
+lookup <- sf_reliability_with_uscrn %>%
+  st_drop_geometry() %>%
+  transmute(
+    state = state,                # modify if your column has a different name
+    county = county,              # modify if your column has a different name
+    WBANNO = station_WBANNO,
+    nearest_station_distance_m,
+    station_within_50km
+  )
+
+readr::write_csv(lookup, out_lookup_csv)
+
+message("Saved matched GeoPackage: ", out_gpkg)
+message("Saved county -> WBANNO lookup CSV: ", out_lookup_csv)
+
+# --------------------- Quick checks / examples ---------------------
+# Show a few matched rows to sanity check
+print( sf_reliability_with_uscrn %>%
+         st_drop_geometry() %>%
+         select(state, county, station_WBANNO, nearest_station_distance_m) %>%
+         slice_head(n = 10) )
+
+# If you later want to pull all weather rows for the matched station for regression,
+# you can inner_join on WBANNO:
+#
+# example_station_ids <- unique(lookup$WBANNO)
+# weather_for_these <- uscrn %>% filter(WBANNO %in% example_station_ids)
+#
+# But for big regressions, it's often best to:
+# - left_join the lookup table onto your county-level panel by date/station,
+# - or aggregate station-level time series to daily/hourly features first, then merge.
+#
+# --------------------- End ---------------------
+
+
+```
