@@ -24,7 +24,7 @@ library(stringr)
 #Paths
 outage_path <- "data_raw/outage_tracker.csv"                # Duke outage table
 lookup_path  <- "data_processed/county_to_uscrn_lookup.csv"  # county->WBANNO mapping
-weather_dir  <- "data_raw/NOAA_weather_stations"            # folder with station .txt files
+weather_dir  <- "data_processed/NOAA_weather_stations_processed"            # folder with station .txt files
 out_merged_rds <- "data_processed/merged_outages_weather_full.rds"
 out_merged_csv <- "data_processed/merged_outages_weather_full.csv"
 
@@ -33,6 +33,8 @@ time_tolerance_secs <- 900   # max allowable seconds difference for final neares
 # If you want only exact matches and no fallback, set time_tolerance_secs <- 0
 # -------------------------------------------------------
 ```
+
+#Process of combining duke outages and weather data
 
 Helper Functions:
 ```{r}
@@ -162,151 +164,17 @@ if (any(is.na(outages$outage_start_dt) & !is.na(outages$outage_restored) & !is.n
 }
 outages[, fix_duration_minutes := parse_duration(fix_duration_estimate)]
 outages[, affected := as.numeric(affected)]
-
-#Build station index and determine which WBANNOs we need to read
-station_index <- build_station_index(weather_dir)
-needed_wban <- unique(na.omit(outages$WBANNO))
-#This checks to see if any weather stations are missing
-missing_index <- setdiff(needed_wban, station_index$WBANNO)
-if (length(missing_index) > 0) {
-  warning("These WBANNOs from lookup are missing station files: ", paste(head(missing_index, 10), collapse = ", "),
-          if (length(missing_index) > 10) paste0(", ... (", length(missing_index), " total)"))
-}
-station_index_needed <- station_index[WBANNO %in% needed_wban]
 ```
-
-Need to process weather station files
-```{r}
-parse_station_file_to_dt <- function(path, tz = "UTC", verbose = FALSE) {
-  if (verbose) message("Parsing: ", basename(path))
-
-  # Try to read with fread sep="" (splits on runs of whitespace)
-  dt_raw <- tryCatch(
-    fread(path, header = FALSE, sep = "", fill = TRUE, showProgress = FALSE),
-    error = function(e) {
-      warning("fread failed on ", path, " : ", e$message)
-      return(NULL)
-    }
-  )
-  if (is.null(dt_raw) || nrow(dt_raw) == 0) {
-    if (verbose) message("No rows read for ", basename(path))
-    return(NULL)
-  }
-
-  # Expected NOAA columns
-  expected_cols <- c(
-    "WBANNO","UTC_DATE","UTC_TIME","LST_DATE","LST_TIME","CRX_VN",
-    "LONGITUDE","LATITUDE","AIR_TEMPERATURE","PRECIPITATION",
-    "SOLAR_RADIATION","SR_FLAG","SURFACE_TEMPERATURE","ST_TYPE",
-    "ST_FLAG","RELATIVE_HUMIDITY","RH_FLAG","SOIL_MOISTURE_5",
-    "SOIL_TEMPERATURE_5","WETNESS","WET_FLAG","WIND_1_5","WIND_FLAG"
-  )
-  n_expected <- length(expected_cols)
-
-  # If fread produced one column (lines not split), or fewer columns than expected, split manually
-  if (ncol(dt_raw) == 1L) {
-    if (verbose) message("fread produced 1 column; splitting lines on whitespace for ", basename(path))
-    lines <- as.character(dt_raw[[1]])
-    # drop blank and comment lines at start
-    lines <- lines[lines != ""]
-    if (length(lines) == 0) return(NULL)
-    # tokenise
-    toks <- strsplit(lines, "\\s+")
-    maxcols <- max(vapply(toks, length, integer(1)))
-    # build matrix (pad with NA)
-    mat <- t(vapply(toks, function(x) c(x, rep(NA_character_, maxcols - length(x))), character(maxcols)))
-    df <- as.data.frame(mat, stringsAsFactors = FALSE)
-    dt <- as.data.table(df)
-  } else {
-    # dt_raw already splitted into multiple columns, use it
-    dt <- copy(dt_raw)
-  }
-
-  # If dt has more columns than expected, trim; if fewer, pad with NA
-  ncols <- ncol(dt)
-  if (ncols < n_expected) {
-    # pad with NA columns
-    for (i in (ncols + 1):n_expected) dt[[i]] <- NA_character_
-  } else if (ncols > n_expected) {
-    # If extra trailing columns exist, keep only the first expected columns
-    # But sometimes files include extra trailing blank column; trim quietly
-    dt <- dt[, 1:n_expected, with = FALSE]
-  }
-  setnames(dt, expected_cols)
-
-  # Clean textual columns
-  dt[, WBANNO := trimws(as.character(WBANNO))]
-  dt[, UTC_DATE := trimws(as.character(UTC_DATE))]
-  dt[, UTC_TIME := trimws(as.character(UTC_TIME))]
-  dt[, LST_DATE := trimws(as.character(LST_DATE))]
-  dt[, LST_TIME := trimws(as.character(LST_TIME))]
-
-  # Ensure HHmm strings (pad left)
-  dt[, UTC_TIME := ifelse(is.na(UTC_TIME) | UTC_TIME == "", NA_character_, sprintf("%04s", UTC_TIME))]
-  dt[, LST_TIME := ifelse(is.na(LST_TIME) | LST_TIME == "", NA_character_, sprintf("%04s", LST_TIME))]
-
-  # Numeric conversion for common weather columns
-  numeric_cols <- c(
-    "LONGITUDE","LATITUDE","AIR_TEMPERATURE","PRECIPITATION",
-    "SOLAR_RADIATION","SURFACE_TEMPERATURE","RELATIVE_HUMIDITY",
-    "SOIL_MOISTURE_5","SOIL_TEMPERATURE_5","WETNESS","WIND_1_5"
-  )
-  for (nc in intersect(numeric_cols, names(dt))) {
-    # suppressWarnings: some rows have -9999 or non-numeric; will become NA
-    dt[[nc]] <- suppressWarnings(as.numeric(dt[[nc]]))
-  }
-
-  # Build POSIX datetimes
-  dt[, start_datetime_utc := as.POSIXct(NA)]
-  ok_start <- !is.na(UTC_DATE) & UTC_DATE != "" & !is.na(UTC_TIME) & UTC_TIME != ""
-  if (any(ok_start)) {
-    dt[ok_start, start_datetime_utc := ymd_hm(
-      paste0(UTC_DATE[ok_start], " ",
-             substr(UTC_TIME[ok_start], 1, 2), ":",
-             substr(UTC_TIME[ok_start], 3, 4)),
-      tz = tz)]
-  }
-
-  dt[, end_datetime_utc := as.POSIXct(NA)]
-  ok_end <- !is.na(LST_DATE) & LST_DATE != "" & !is.na(LST_TIME) & LST_TIME != ""
-  if (any(ok_end)) {
-    dt[ok_end, end_datetime_utc := ymd_hm(
-      paste0(LST_DATE[ok_end], " ",
-             substr(LST_TIME[ok_end], 1, 2), ":",
-             substr(LST_TIME[ok_end], 3, 4)),
-      tz = tz)]
-  }
-
-  # Optionally drop text date/time columns to save memory:
-  # dt[, c("UTC_DATE","UTC_TIME","LST_DATE","LST_TIME") := NULL]
-
-  # Ensure WBANNO is character (leading zeros preserved)
-  dt[, WBANNO := as.character(WBANNO)]
-
-  # set key for joins if possible
-  if (all(c("WBANNO","start_datetime_utc") %in% names(dt))) setkeyv(dt, c("WBANNO","start_datetime_utc"))
-
-  if (verbose) {
-    message(sprintf("Parsed %s: rows=%d, start_na=%d, end_na=%d",
-                    basename(path), nrow(dt), sum(is.na(dt$start_datetime_utc)), sum(is.na(dt$end_datetime_utc))))
-  }
-
-  return(dt[])
-}
-```
+for each row, we want to match WBANNO with the respective file name in NOAA_weather_stations_processed.rds.
+Then we want to match outage_start_dt between both files and then add on all the weather variables("AIR_TEMPERATURE", "PRECIPITATION",
+  "SOLAR_RADIATION", "SR_FLAG", "SURFACE_TEMPERATURE", "ST_TYPE", "ST_FLAG",
+  "RELATIVE_HUMIDITY", "RH_FLAG", "SOIL_MOISTURE_5", "SOIL_TEMPERATURE_5",
+  "WETNESS", "WET_FLAG", "WIND_1_5", "WIND_FLAG") to the outages file
 
 ```{r}
-# For each needed station, read file, and store in a list keyed by WBANNO (read once)
-station_data_list <- list()
-for (i in seq_len(nrow(station_index_needed))) {
-  w <- station_index_needed$WBANNO[i]
-  f <- station_index_needed$file[i]
-  message("Reading station ", w, " from ", basename(f), " ...")
-  
-  sd <- parse_station_file_to_dt(f)
-  if (!is.null(sd)) station_data_list[[w]] <- sd
-}
+
 ```
+
 # GAMs
 
 Worth trying out GAMs (Generalized Additive Models) next because I want longitude and latitude to capture smooth spatial trends rather than discrete group effects, random effects won’t fully capture that.

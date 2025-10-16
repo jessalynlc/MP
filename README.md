@@ -20,6 +20,9 @@ TADS_Vegetation.Rmd: this will contain the TADS analysis of the following
 - Processes raw txt files from NOAA
 03_NOAA_Weather_Stations.Rmd
 - Exploring weather data
+04_NOAA_Weather_Stations.R
+- For each weather station txt file in NOAA_weather_stations in data_raw, split into columns, add headers, and generate an rds file to save in NOAA_weather_stations_processed
+- Name rds file after WBANNO to make join with duke energy data easier
 
 01_duke_weather_analysis.Rmd
 - Combining duke outage and weather data and outputting county_to_uscrn_lookup.csv
