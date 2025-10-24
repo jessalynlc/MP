@@ -1,0 +1,150 @@
+---
+title: "03_duke_weather_analysis"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library(here)
+library(tidyverse)
+library(lubridate)
+library(nlme)
+library(gtsummary)
+library(lme4)
+library(sf)
+library(data.table)
+library(stringr)
+```
+
+Read in table that has all of the duke outages and weather data
+```{r}
+duke_weather_join <- readRDS("./data_processed/duke_weather_join.rds")
+```
+
+Adding columns for the following:
+- Month
+- Season
+- Hour
+- Weekend/weekday
+
+```{r}
+#Add a month column here
+duke_weather_updated <- duke_weather_join %>% 
+  mutate('hour' = hour(outage_start_dt)) %>% 
+  mutate('day_number' = wday(outage_start_dt)) %>% 
+  mutate('month_number' = month(outage_start_dt)) %>% 
+  mutate('year_number' = year(outage_start_dt)) %>% 
+  mutate('season' = ifelse(month_number %in% c(12,1,2),'Winter',
+                           ifelse(month_number %in% c(3,4,5), 'Spring', 
+                                  ifelse(month_number %in% c(6,7,8), 'Summer', 'Fall'
+                                         )
+                                  )
+                           )
+         ) %>% 
+  mutate('day_of_week' = ifelse(day_number %in% c(1,7), 1, 0)) #0 for weekday, 1 for weekend
+  #Note that wday's default is 1 for Sunday and 7 for Saturday
+
+#order by date
+duke_weather_updated <- duke_weather_updated[order(duke_weather_updated$outage_start_dt)]
+```
+
+# Exploratory
+Checking distributions of numeric variables to see if anything needs to be transformed
+
+```{r}
+numeric_vars <- duke_weather_updated %>%
+  select(where(is.numeric)) %>%                    
+  select(-any_of(c("device_lat","device_lon","outage_id","WBANNO", "outage_identifer", "affected", "block_fips")))
+
+numeric_vars_dis <- numeric_vars %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "white") +
+  facet_wrap(~ variable, scales = "free") +
+  theme_bw() +
+  labs(title = "Distribution of Numeric Variables")
+
+numeric_vars_dis
+
+```
+
+Variables to log transform since they are very right-skewed:
+- fix_duration_minutes
+- SOLAR_RADIATION
+- WIND_1_5
+
+```{r}
+#Log transformation of the columns
+duke_weather_transformed <- duke_weather_updated %>%
+  mutate(
+    fix_duration_minutes_log = log1p(fix_duration_minutes),
+    SOLAR_RADIATION_log      = log1p(SOLAR_RADIATION),
+    WIND_1_5_log             = log1p(WIND_1_5)
+  )
+ 
+numeric_vars_transformed <- duke_weather_transformed %>%
+  select(where(is.numeric)) %>%                    
+  select(-any_of(c("device_lat","device_lon","outage_id","WBANNO", "outage_identifer", "affected", "block_fips")))
+
+numeric_vars_transformed_dis <- numeric_vars_transformed %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "white") +
+  facet_wrap(~ variable, scales = "free") +
+  theme_bw() +
+  labs(title = "Distribution of Numeric Variables")
+
+numeric_vars_transformed_dis
+```
+
+# GLM
+I am collecting reliability metrics from 9 states, sampling different weather quantities in each state
+fix_duration_estimate ~  outage_start_dt + AIR_TEMPERATURE + PRECIPITATION + RELATIVE_HUMIDITY + SOLAR_RADIATION_log + WIND_1_5_log + SOIL_MOISTURE_5 + device_lat + device_lon, random = ~1 | State/County, data = all of data I want to try first seeing if it also depends on season
+
+then want to try if it depends on day_of_week (or can i keep both in the same equation)
+
+duration_outage ~  UTC_DATE + UTC_TIME + AIR_TEMPERATURE + PRECIPITATION + RELATIVE_HUMIDITY + LONGITUDE + LATITUDE, random = ~1 | State/County, data = all of data
+
+```{r}
+#fitting a linear mixed-effects model
+# variable list
+
+dt <- as.data.table(duke_weather_transformed)
+
+# Step 1 — define numvars in your global environment
+numvars <- c("AIR_TEMPERATURE","PRECIPITATION",
+             "RELATIVE_HUMIDITY","SOLAR_RADIATION_log","WIND_1_5_log",
+             "SOIL_MOISTURE_5","device_lat","device_lon")
+
+# Step 2 — confirm numvars is visible
+print(numvars)
+
+# Step 3 — now this will work
+sds <- sapply(dt[, ..numvars], function(x) sd(x, na.rm = TRUE))
+print(sds)
+
+cor_mat <- cor(dt[, ..numvars], use = "pairwise.complete.obs")
+print(round(cor_mat, 3))
+
+duration_lme1 <- gls(
+  fix_duration_minutes_log ~ AIR_TEMPERATURE + PRECIPITATION +
+    RELATIVE_HUMIDITY + SOLAR_RADIATION_log + WIND_1_5_log +
+    device_lat + device_lon,
+  data = duke_weather_transformed,
+  na.action = na.omit
+)
+
+summary(duration_lme1)
+```
+
+
+# GAMs
+
+Worth trying out GAMs (Generalized Additive Models) next because I want longitude and latitude to capture smooth spatial trends rather than discrete group effects, random effects won’t fully capture that.
+
+# Later
+
+Add socioecnomic indicators
+
+population + median income + percent of household with no cars + percent households spending more than 30% of income on housing costs + winter + summer , random = ~1 | State, data = all_of_ data
