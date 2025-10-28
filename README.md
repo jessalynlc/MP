@@ -30,4 +30,13 @@ TADS_Vegetation.Rmd: this will contain the TADS analysis of the following
 - computes the distance, tags whether the station is within 50 km
 - saves a GeoPackage with the joined spatial data plus a CSV lookup table
 02_duke_weather_analysis.Rmd
+- joins duke outage and weather data, saves it to data_processed under "duke_weather_join.rds"
+03_duke_weather_analysis.Rmd
 - Contains multilevel model
+
+01_duke_weather_tsa.Rmd
+- reformatting table to have full time recordings for weather across 2024-2025
+- If a time has an outage present (check for those continuing on from previous period)
+- put the outage information from raw outages next to the weather data
+
+test
