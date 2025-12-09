@@ -38,5 +38,3 @@ TADS_Vegetation.Rmd: this will contain the TADS analysis of the following
 - reformatting table to have full time recordings for weather across 2024-2025
 - If a time has an outage present (check for those continuing on from previous period)
 - put the outage information from raw outages next to the weather data
-
-test

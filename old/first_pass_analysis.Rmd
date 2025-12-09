@@ -1,6 +1,8 @@
 ---
 title: "data_mapping_v1"
 output: html_document
+editor_options: 
+  chunk_output_type: console
 ---
 
 #Packages
@@ -34,7 +36,7 @@ Prelim analysis details:
 - For each state, plot the total duration of outages going on during each day on a single plot
 
 ```{r}
-outages <- read.csv('outage_tracker.csv')
+outages <- read.csv('./data_raw/outage_tracker.csv')
 
 outages <- outages %>%
   mutate(
@@ -60,6 +62,22 @@ ggplot(outages, aes(x = duration_hours)) +
     fill = "Outage Type"
   ) +
   theme_minimal()
+
+ggplot(outages, aes(x = log1p(duration_hours))) +
+  geom_histogram(binwidth = 1, position = "identity", alpha = 0.6) +
+  facet_wrap(~cause, scales = "free_y", labeller = labeller(
+    cause = c(
+      planned = "Planned Outage",
+      unplanned = "Unplanned Outage"
+    )
+  )) +
+  labs(
+    title = "Log of Outage Duration by Type",
+    x = "Log of Duration",
+    y = "Count",
+    fill = "Outage Type"
+  ) +
+  theme_minimal()
 ```
 
 ```{r}
@@ -75,14 +93,14 @@ leaflet(planned_data) %>%
     radius = 5,
     stroke = FALSE,
     fillOpacity = 0.8,
-    color = ~colorNumeric("YlOrRd", domain = planned_data$duration_hours)(duration_hours),
+    color = ~colorNumeric("YlOrRd", domain = log1p(planned_data$duration_hours))(log1p(duration_hours)),
     label = ~paste0("Duration: ", round(duration_hours, 2), " hrs")
   ) %>%
   addLegend(
     "bottomright",
-    pal = colorNumeric("YlOrRd", domain = planned_data$duration_hours),
-    values = planned_data$duration_hours,
-    title = "Duration (hrs)"
+    pal = colorNumeric("YlOrRd", domain = log1p(planned_data$duration_hours)),
+    values = log1p(planned_data$duration_hours),
+    title = "log(Duration) (hrs)"
   )
 
 planned_data <- outages %>% 
@@ -121,13 +139,13 @@ leaflet(unplanned_data) %>%
     radius = 5,
     stroke = FALSE,
     fillOpacity = 0.8,
-    color = ~colorNumeric("YlGnBu", domain = unplanned_data$duration_hours)(duration_hours),
+    color = ~colorNumeric("YlGnBu", domain = log1p(unplanned_data$duration_hours))(log1p(duration_hours)),
     label = ~paste0("Duration: ", round(duration_hours, 2), " hrs")
   ) %>%
   addLegend(
     "bottomright",
-    pal = colorNumeric("YlGnBu", domain = unplanned_data$duration_hours),
-    values = unplanned_data$duration_hours,
+    pal = colorNumeric("YlGnBu", domain = log1p(unplanned_data$duration_hours)),
+    values = log1p(unplanned_data$duration_hours),
     title = "Duration (hrs)"
   )
 
@@ -199,7 +217,7 @@ ggplot(daily_state_summary, aes(x = days_seq, y = total_outage_hours, color = st
     color = "State"
   ) +  
   scale_x_date(
-    date_breaks = "3 days"
+    date_breaks = "3 months"
   ) +
   theme_minimal()
 
@@ -212,7 +230,7 @@ ggplot(daily_jurisdiction_summary, aes(x = days_seq, y = total_outage_hours, col
     color = "Duke Energy Jurisdiction"
   ) +
   scale_x_date(
-    date_breaks = "1 days"
+    date_breaks = "3 months"
   ) +
   theme_minimal()
 ```

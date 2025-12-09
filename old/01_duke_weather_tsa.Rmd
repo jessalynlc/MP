@@ -1,0 +1,48 @@
+---
+title: "01_duke_weather_tsa"
+output: html_document
+---
+
+```{r}
+library(here)
+library(tidyverse)
+library(lubridate)
+library(nlme)
+library(gtsummary)
+library(lme4)
+library(sf)
+library(data.table)
+library(stringr)
+library(ggplot2)
+library(scales)
+```
+
+```{r}
+#Paths
+outage_path <- "data_raw/outage_tracker.csv"                # Duke outage table
+lookup_path  <- "data_processed/county_to_uscrn_lookup.csv"  # county->WBANNO mapping
+weather_dir  <- "data_processed/NOAA_weather_stations_processed"            # folder with station .rds files
+out_merged_rds <- "data_processed/merged_outages_weather_full.rds"
+out_merged_csv <- "data_processed/merged_outages_weather_full.csv"
+```
+
+```{r}
+outages <- read.csv('./data_raw/outage_tracker.csv')
+outages <- outages %>%
+  mutate(
+    days = as.numeric(str_extract(fix_duration_estimate, "\\d+(?=d)")),
+    hours = as.numeric(str_extract(fix_duration_estimate, "\\d+(?=h)")),
+    minutes = as.numeric(str_extract(fix_duration_estimate, "\\d+(?=m)")),
+    seconds = as.numeric(str_extract(fix_duration_estimate, "\\d+(?=s)")),
+    duration_hours = coalesce(days, 0)*24 + coalesce(hours, 0) + coalesce(minutes, 0)/60 + coalesce(seconds, 0)/3600
+  )
+outages$outage_start_estimate <- ymd_hms(outages$outage_start_estimate, tz = "UTC")
+outages$outage_end_estimate   <- ymd_hms(outages$outage_end_estimate, tz = "UTC")
+#Convert to Eastern Time
+outages$outage_start_estimate <- with_tz(outages$outage_start_estimate, tzone = "America/New_York")
+outages$outage_end_estimate   <- with_tz(outages$outage_end_estimate, tzone = "America/New_York")
+
+outages_ordered <- outages[order(outages$outage_start_estimate), ]
+```
+
+
