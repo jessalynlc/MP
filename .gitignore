@@ -1,3 +1,7 @@
+data_processed/
+data_raw/
+econet_data/
+
 # History files
 .Rhistory
 .Rapp.history
