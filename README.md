@@ -1,40 +1,14 @@
 # MP
 
 First Phase
-TADS_Vegetation.Rmd: this will contain the TADS analysis of the following
-- trends in outage cause codes
-- vegetation rates
 
-01_saidi_saifi_caidi_duke.Rmd
-- calculating SAIDI/SAIFI/CAIDI annula metrics on the Duke Energy data to compare with state level data
-02_saidi_saifi_caidi_duke.R
-- Allocates outages to every 5-min bin they overlap (count interruption in each spanned bin).
-- Computes SAIDI_5min, SAIFI_5min, CAIDI_5min per county x 5-min bin using tidycensus population.
-- Joins county -> nearest WBANNO (from reliability_with_matched_uscrn.gpkg).
-- Joins 5-min weather from uscrn_combined_reformatted.rds (WBANNO + datetime).
-- Builds model-ready dataset and fits lmer: CAIDI_5min ~ weather + (1 | state).
+data_clean.ipynb
 
-01_NOAA_Weather_Stations.R
-- Pulls all the txt files from NOAA (raw)
-02_NOAA_Weather_Stations.R
-- Processes raw txt files from NOAA
-03_NOAA_Weather_Stations.Rmd
-- Exploring weather data
-04_NOAA_Weather_Stations.R
-- For each weather station txt file in NOAA_weather_stations in data_raw, split into columns, add headers, and generate an rds file to save in NOAA_weather_stations_processed
-- Name rds file after WBANNO to make join with duke energy data easier
+outage_summary.ipynb
 
-01_duke_weather_analysis.Rmd
-- Combining duke outage and weather data and outputting county_to_uscrn_lookup.csv
-- it matches each county (from your reliability spatial data) to the nearest USCRN weather station
-- computes the distance, tags whether the station is within 50 km
-- saves a GeoPackage with the joined spatial data plus a CSV lookup table
-02_duke_weather_analysis.Rmd
-- joins duke outage and weather data, saves it to data_processed under "duke_weather_join.rds"
-03_duke_weather_analysis.Rmd
-- Contains multilevel model
+pca_outages.ipynb
 
-01_duke_weather_tsa.Rmd
-- reformatting table to have full time recordings for weather across 2024-2025
-- If a time has an outage present (check for those continuing on from previous period)
-- put the outage information from raw outages next to the weather data
+pca_socioeconomics.ipynb
+
+
+
