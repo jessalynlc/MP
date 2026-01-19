@@ -4,7 +4,7 @@ data_clean.ipynb
 
 outage_summary.ipynb
 
-pca_outages.ipynb outputs (same for other pca_outages geographic regions):
+pca_outages.ipynb outputs (same for other pca_outages geographic regions): (9 files)
 - outages_tract_loadings.csv: this shows what each PC represents (and what a high/low score for the PC means)
 - outages_cluster_profiles.csv: this is the statistical outage summary for each cluster (ie max/min/median/etc values for outage metrics)
 - outages_tracts_with_pca_and_clusters.geojson: this is the geojson data for a map that shows the PC scores and cluster for each tract
@@ -15,7 +15,7 @@ pca_outages.ipynb outputs (same for other pca_outages geographic regions):
 - top50_standout_tracts.csv: top 50 outliers (that are currently mapped)
 - cluster_weather_socioeconomics_heatmap.png: cluster-level z-scores (above/below average)
 
-pca_socioeconomics.ipynb outputs (same for other pca_socioeconomics geographic regions);
+pca_socioeconomics.ipynb outputs (same for other pca_socioeconomics geographic regions): (9 files)
 - socioeconomics pca loadings.csv: this shows what each PC represents (and what a high/low score for the PC means)
 - socioeconomics_cluster_profiles.csv: this is the statistical socioeconomics summary for each cluster (ie mean values for socioeconomic metrics, but NOTE these are z-scores, not the original values)
 - socioeconomic_tracts_with_pca_and_clusters.geojson: this is the geojson data for a map that shows the PC scores and cluster for each tract
